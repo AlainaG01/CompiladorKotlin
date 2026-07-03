@@ -6,13 +6,11 @@ fun main(args: Array<String>) {
     // y corrompen los acentos de los mensajes (p. ej. "línea" -> "l?nea").
     System.setOut(java.io.PrintStream(java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"))
 
-    // Si se invoca con un argumento, se interpreta como ruta a un archivo .jay
-    // y se compila ese archivo en lugar de correr las pruebas embebidas.
-    if (args.isNotEmpty()) {
-        compilarArchivo(args[0])
-        return
-    }
+    // Ejecuta directamente el archivo programa.jay
+    compilarArchivo("programa.jay")
+    return
 
+    /*
     // Prueba 1: Correcta — asignación básica (igual al enunciado del ejercicio)
     compilar("ASIGNACION BASICA (CORRECTO)",
         """
@@ -86,4 +84,5 @@ fun main(args: Array<String>) {
         varjay stringjay s := "texto sin cerrar;
         """.trimIndent()
     )
+    */
 }
