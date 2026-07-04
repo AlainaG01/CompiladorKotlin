@@ -36,6 +36,7 @@ class AnalizadorLexico(private val fuente: String) {
                 c.isLetter() || c == '_' -> leerIdentificadorOReservada(lin, col)
                 c == ':' && pos+1 < fuente.length && fuente[pos+1] == '=' -> { agregar(TipoToken.ASIGNACION, ":=", lin, col); avanzarChar(); avanzarChar() }
                 c == '=' && pos+1 < fuente.length && fuente[pos+1] == '=' -> { agregar(TipoToken.OPERADOR,  "==", lin, col); avanzarChar(); avanzarChar() }
+                c == '=' -> { agregar(TipoToken.ASIGNACION, "=", lin, col); avanzarChar()}
                 c == '!' && pos+1 < fuente.length && fuente[pos+1] == '=' -> { agregar(TipoToken.OPERADOR,  "!=", lin, col); avanzarChar(); avanzarChar() }
                 c == '<' && pos+1 < fuente.length && fuente[pos+1] == '=' -> { agregar(TipoToken.OPERADOR,  "<=", lin, col); avanzarChar(); avanzarChar() }
                 c == '>' && pos+1 < fuente.length && fuente[pos+1] == '=' -> { agregar(TipoToken.OPERADOR,  ">=", lin, col); avanzarChar(); avanzarChar() }
