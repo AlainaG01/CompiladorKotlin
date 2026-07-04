@@ -15,6 +15,19 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
     val errores = mutableListOf<String>()
     val tablaSimbolos = TablaSimbolos()
 
+    // Limite de seguridad para evitar que un whilejay/forjay con una condicion
+    // mal escrita (que nunca se vuelva falsa) cuelgue el programa para siempre.
+    private val LIMITE_ITERACIONES = 100_000
+
+    // Controla si las declaraciones/sentencias que se estan parseando en este
+    // momento deben producir efectos visibles de verdad (imprimir con printjay,
+    // actualizar valores de variables) o no. Se pone en "false" temporalmente
+    // cuando se recorre una rama de ifjay que NO se tomo, o el cuerpo de un
+    // whilejay/forjay que ya no debe volver a correr, para poder seguir
+    // parseando esos tokens (y seguir reportando sus errores semanticos reales)
+    // sin que ademas se comporten como si hubieran corrido.
+    private var ejecutando = true
+
     private fun actual() = tokens[pos]
     private fun avanzar() { if (pos < tokens.size - 1) pos++ }
 
@@ -34,13 +47,17 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         else { errores.add("ERROR SINTACTICO [linea ${t.linea}, columna ${t.columna}]: se esperaba '$palabra' pero se encontro '${t.valor}'"); null }
     }
 
+    // Un valor de condicion cuenta como verdadero solo si es literalmente el
+    // booleano true. Cualquier otra cosa (false, null por error previo, etc.)
+    // se trata como falso.
+    private fun esVerdadero(valor: Any?): Boolean = valor == true
+
     fun analizar() {
         tablaSimbolos.entrarAmbito()
         while (actual().tipo != TipoToken.FIN_ARCHIVO) parsearDeclaracion()
         // No cerramos el ambito global aqui: se deja abierto a proposito para que
         // Compilador.kt pueda imprimir la tabla de simbolos con las variables del
-        // programa despues de terminar el analisis. El programa ya termino, así
-        // que no hace falta liberar este ambito.
+        // programa despues de terminar el analisis.
     }
 
     private fun parsearDeclaracion() {
@@ -96,33 +113,93 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         if (simb != null && !simb.esConstante) {
             if (simb.tipo != TipoDato.DESCONOCIDO && tipoExpr != TipoDato.DESCONOCIDO && simb.tipo != tipoExpr) {
                 errores.add("ERROR SEMANTICO [linea ${idTok.linea}, columna ${idTok.columna}]: no se puede asignar un valor de tipo $tipoExpr a '${idTok.valor}' declarada como ${simb.tipo}")
-            } else {
+            } else if (ejecutando) {
                 tablaSimbolos.actualizar(idTok.valor, valorExpr)
             }
         }
     }
 
+    // ifjay ( condicion ) { bloque } [ elsejay { bloque } ]
+    // Ambas ramas se parsean siempre (para reportar sus errores reales), pero
+    // solo la rama que corresponde al valor real de la condicion se ejecuta
+    // con efectos visibles (prints, asignaciones). La otra se parsea con
+    // "ejecutando = false".
     private fun parsearIf() {
         consumirReservada("ifjay")
         consumir(TipoToken.PARENTESIS_A, "(")
-        parsearExpresion()
+        val condTok = actual()
+        val (tipoCond, valorCond) = parsearExpresion()
+        if (tipoCond != TipoDato.BOOLEAN && tipoCond != TipoDato.DESCONOCIDO)
+            errores.add("ERROR SEMANTICO [linea ${condTok.linea}, columna ${condTok.columna}]: la condicion de ifjay debe ser booleana, se recibio $tipoCond")
         consumir(TipoToken.PARENTESIS_C, ")")
-        parsearBloque()
-        if (actual().tipo == TipoToken.RESERVADA && actual().valor == "elsejay") { avanzar(); parsearBloque() }
+
+        val esVerdadera = esVerdadero(valorCond)
+
+        if (esVerdadera) {
+            parsearBloque()
+        } else {
+            val previo = ejecutando
+            ejecutando = false
+            parsearBloque()
+            ejecutando = previo
+        }
+
+        if (actual().tipo == TipoToken.RESERVADA && actual().valor == "elsejay") {
+            avanzar()
+            if (esVerdadera) {
+                val previo = ejecutando
+                ejecutando = false
+                parsearBloque()
+                ejecutando = previo
+            } else {
+                parsearBloque()
+            }
+        }
     }
 
+    // whilejay ( condicion ) { bloque }
+    // Tecnica usada para iterar de verdad sin tener un AST: se guarda la
+    // posicion (indice de token) donde empieza la condicion, y cada vez que
+    // hace falta volver a evaluarla, se "rebobina" pos hasta ahi y se vuelve a
+    // parsear. Como parsear una expresion sin efectos secundarios es
+    // determinista (misma lista de tokens, mismos valores en la tabla de
+    // simbolos si nadie los cambio), esto es seguro y no duplica tokens.
     private fun parsearWhile() {
         consumirReservada("whilejay")
         consumir(TipoToken.PARENTESIS_A, "(")
-        parsearExpresion()
-        consumir(TipoToken.PARENTESIS_C, ")")
-        parsearBloque()
+        val posCondicion = pos
+        var iteraciones = 0
+
+        while (true) {
+            pos = posCondicion
+            val condTok = actual()
+            val (tipoCond, valorCond) = parsearExpresion()
+            if (tipoCond != TipoDato.BOOLEAN && tipoCond != TipoDato.DESCONOCIDO)
+                errores.add("ERROR SEMANTICO [linea ${condTok.linea}, columna ${condTok.columna}]: la condicion de whilejay debe ser booleana, se recibio $tipoCond")
+            consumir(TipoToken.PARENTESIS_C, ")")
+            val posCuerpo = pos
+
+            if (esVerdadero(valorCond) && iteraciones < LIMITE_ITERACIONES) {
+                pos = posCuerpo
+                parsearBloque()
+                iteraciones++
+            } else {
+                if (iteraciones >= LIMITE_ITERACIONES)
+                    errores.add("ERROR SEMANTICO [linea ${condTok.linea}, columna ${condTok.columna}]: whilejay supero el limite de $LIMITE_ITERACIONES iteraciones (posible ciclo infinito)")
+                pos = posCuerpo
+                val previo = ejecutando
+                ejecutando = false
+                parsearBloque()
+                ejecutando = previo
+                break
+            }
+        }
     }
 
     // forjay ( inicializacion ; condicion ; incremento ) { bloque }
-    // La inicializacion admite una declaracion "varjay" completa (con su propio ';')
-    // o una asignacion simple "id := expresion". El incremento es una asignacion
-    // simple sin ';' final, ya que el propio delimitador ')' cierra la sentencia.
+    // Misma tecnica de rebobinado de "pos" que whilejay, adaptada a las 3
+    // clausulas del for: la inicializacion se ejecuta una sola vez, la
+    // condicion y el incremento se re-parsean en cada vuelta.
     private fun parsearFor() {
         consumirReservada("forjay")
         consumir(TipoToken.PARENTESIS_A, "(")
@@ -136,17 +213,48 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
             errores.add("ERROR SINTACTICO [linea ${actual().linea}, columna ${actual().columna}]: se esperaba inicializacion del for")
         }
 
-        parsearExpresion()
-        consumir(TipoToken.PUNTO_COMA, ";")
+        val posCondicion = pos
+        var iteraciones = 0
 
-        if (actual().tipo == TipoToken.IDENTIFICADOR) {
+        while (true) {
+            pos = posCondicion
+            val condTok = actual()
+            val (tipoCond, valorCond) = parsearExpresion()
+            if (tipoCond != TipoDato.BOOLEAN && tipoCond != TipoDato.DESCONOCIDO)
+                errores.add("ERROR SEMANTICO [linea ${condTok.linea}, columna ${condTok.columna}]: la condicion de forjay debe ser booleana, se recibio $tipoCond")
+            consumir(TipoToken.PUNTO_COMA, ";")
+            val posIncremento = pos
+
+            // Primera pasada por el incremento: solo para saber donde termina
+            // (llegar al ")"), sin aplicarlo todavia. Se aplica de verdad
+            // despues de correr el cuerpo, mas abajo.
+            val previoIncrementoDry = ejecutando
+            ejecutando = false
             parsearAsignacionSinPuntoComa()
-        } else {
-            errores.add("ERROR SINTACTICO [linea ${actual().linea}, columna ${actual().columna}]: se esperaba incremento del for")
+            ejecutando = previoIncrementoDry
+
+            consumir(TipoToken.PARENTESIS_C, ")")
+            val posCuerpo = pos
+
+            if (esVerdadero(valorCond) && iteraciones < LIMITE_ITERACIONES) {
+                pos = posCuerpo
+                parsearBloque()
+                // Ahora si se aplica el incremento de verdad para la siguiente vuelta.
+                pos = posIncremento
+                parsearAsignacionSinPuntoComa()
+                iteraciones++
+            } else {
+                if (iteraciones >= LIMITE_ITERACIONES)
+                    errores.add("ERROR SEMANTICO [linea ${condTok.linea}, columna ${condTok.columna}]: forjay supero el limite de $LIMITE_ITERACIONES iteraciones (posible ciclo infinito)")
+                pos = posCuerpo
+                val previo = ejecutando
+                ejecutando = false
+                parsearBloque()
+                ejecutando = previo
+                break
+            }
         }
 
-        consumir(TipoToken.PARENTESIS_C, ")")
-        parsearBloque()  // el cuerpo abre su propio ambito anidado dentro del ambito del for
         tablaSimbolos.salirAmbito()
     }
 
@@ -158,7 +266,7 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         else if (simb.esConstante) errores.add("ERROR SEMANTICO [linea ${idTok.linea}, columna ${idTok.columna}]: '${idTok.valor}' es constante y no puede reasignarse")
         consumir(TipoToken.ASIGNACION, ":=") ?: return
         val (_, valor) = parsearExpresion()
-        if (simb != null && !simb.esConstante) tablaSimbolos.actualizar(idTok.valor, valor)
+        if (simb != null && !simb.esConstante && ejecutando) tablaSimbolos.actualizar(idTok.valor, valor)
     }
 
     // breakjay ;
@@ -183,7 +291,7 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         val (_, valor) = parsearExpresion()
         consumir(TipoToken.PARENTESIS_C, ")")
         consumir(TipoToken.PUNTO_COMA, ";")
-        println(">> ${valor ?: "null"}")
+        if (ejecutando) println(">> ${valor ?: "null"}")
     }
 
     private fun parsearBloque() {
@@ -205,10 +313,9 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
     //   unario      := ("-" | "notjay") unario | primario
     //   primario    := NUMERO | CADENA | truejay | falsejay | identificador
     //                | "(" expresion ")"
-    // Esto respeta la precedencia matematica tradicional (paréntesis > unario >
-    // */ > +- > relacionales > and > or) y le da uso real a las palabras
-    // reservadas logicas ("andjay", "orjay", "notjay"), que antes estaban
-    // declaradas mas nunca conectadas a la gramatica.
+    // Ahora cada nivel calcula tanto el TIPO como el VALOR real de la
+    // expresion (incluyendo booleanos reales en comparaciones, and/or/not),
+    // para que ifjay/whilejay/forjay puedan decidir de verdad que rama tomar.
     // ────────────────────────────────────────────────────────────
 
     private fun parsearExpresion(): Pair<TipoDato, Any?> = parsearOr()
@@ -217,9 +324,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         var (tipoIzq, valIzq) = parsearAnd()
         while (actual().tipo == TipoToken.RESERVADA && actual().valor == "orjay") {
             val opTok = actual(); avanzar()
-            val (tipoDer, _) = parsearAnd()
+            val (tipoDer, valDer) = parsearAnd()
             if (tipoIzq != TipoDato.BOOLEAN || tipoDer != TipoDato.BOOLEAN)
                 errores.add("ERROR SEMANTICO [linea ${opTok.linea}, columna ${opTok.columna}]: 'orjay' requiere operandos booleanos, se recibio $tipoIzq y $tipoDer")
+            valIzq = if (valIzq is Boolean && valDer is Boolean) (valIzq || valDer) else null
             tipoIzq = TipoDato.BOOLEAN
         }
         return Pair(tipoIzq, valIzq)
@@ -229,9 +337,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         var (tipoIzq, valIzq) = parsearRelacional()
         while (actual().tipo == TipoToken.RESERVADA && actual().valor == "andjay") {
             val opTok = actual(); avanzar()
-            val (tipoDer, _) = parsearRelacional()
+            val (tipoDer, valDer) = parsearRelacional()
             if (tipoIzq != TipoDato.BOOLEAN || tipoDer != TipoDato.BOOLEAN)
                 errores.add("ERROR SEMANTICO [linea ${opTok.linea}, columna ${opTok.columna}]: 'andjay' requiere operandos booleanos, se recibio $tipoIzq y $tipoDer")
+            valIzq = if (valIzq is Boolean && valDer is Boolean) (valIzq && valDer) else null
             tipoIzq = TipoDato.BOOLEAN
         }
         return Pair(tipoIzq, valIzq)
@@ -241,9 +350,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         var (tipoIzq, valIzq) = parsearSuma()
         while (actual().tipo == TipoToken.OPERADOR && actual().valor in OPERADORES_RELACIONALES) {
             val op = actual(); avanzar()
-            val (tipoDer, _) = parsearSuma()
+            val (tipoDer, valDer) = parsearSuma()
             if (tipoIzq != tipoDer && tipoIzq != TipoDato.DESCONOCIDO && tipoDer != TipoDato.DESCONOCIDO)
                 errores.add("ERROR SEMANTICO [linea ${op.linea}, columna ${op.columna}]: operacion '${op.valor}' entre tipos incompatibles $tipoIzq y $tipoDer")
+            valIzq = evaluarRelacional(op.valor, valIzq, valDer)
             tipoIzq = TipoDato.BOOLEAN
         }
         return Pair(tipoIzq, valIzq)
@@ -274,11 +384,6 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
     }
 
     // Mini-evaluador de operaciones aritmeticas en tiempo de "compilacion/ejecucion".
-    // Como el proyecto no tiene AST, la evaluacion ocurre en el mismo recorrido
-    // recursivo-descendente que ya calculaba los tipos: cada nivel de la gramatica
-    // (parsearSuma/parsearTermino) ahora combina tambien los valores reales, no solo
-    // sus tipos. Si algun operando es null (por error semantico previo) o la
-    // combinacion de tipos no es soportada, se devuelve null en vez de lanzar excepcion.
     private fun evaluarBinaria(op: String, izq: Any?, der: Any?): Any? {
         if (izq == null || der == null) return null
         return when {
@@ -303,6 +408,35 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         }
     }
 
+    // Evaluador de comparaciones relacionales, para poder saber de verdad si
+    // una condicion de ifjay/whilejay/forjay es verdadera o falsa.
+    private fun evaluarRelacional(op: String, izq: Any?, der: Any?): Any? {
+        if (izq == null || der == null) return null
+        return when {
+            izq is Int && der is Int -> when (op) {
+                "==" -> izq == der; "!=" -> izq != der
+                "<"  -> izq < der;  ">"  -> izq > der
+                "<=" -> izq <= der; ">=" -> izq >= der
+                else -> null
+            }
+            izq is Double && der is Double -> when (op) {
+                "==" -> izq == der; "!=" -> izq != der
+                "<"  -> izq < der;  ">"  -> izq > der
+                "<=" -> izq <= der; ">=" -> izq >= der
+                else -> null
+            }
+            izq is String && der is String -> when (op) {
+                "==" -> izq == der; "!=" -> izq != der
+                else -> null
+            }
+            izq is Boolean && der is Boolean -> when (op) {
+                "==" -> izq == der; "!=" -> izq != der
+                else -> null
+            }
+            else -> null
+        }
+    }
+
     // Operadores unarios: negacion aritmetica "-" y negacion logica "notjay"
     private fun parsearUnario(): Pair<TipoDato, Any?> {
         val t = actual()
@@ -316,10 +450,11 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         }
         if (t.tipo == TipoToken.RESERVADA && t.valor == "notjay") {
             avanzar()
-            val (tipo, _) = parsearUnario()
+            val (tipo, valor) = parsearUnario()
             if (tipo != TipoDato.BOOLEAN && tipo != TipoDato.DESCONOCIDO)
                 errores.add("ERROR SEMANTICO [linea ${t.linea}, columna ${t.columna}]: 'notjay' requiere un operando booleano, se recibio $tipo")
-            return Pair(TipoDato.BOOLEAN, null)
+            val nuevoValor = if (valor is Boolean) !valor else null
+            return Pair(TipoDato.BOOLEAN, nuevoValor)
         }
         return parsearPrimario()
     }

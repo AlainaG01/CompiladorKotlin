@@ -2,3 +2,26 @@ varjay intjay x = 100;
 varjay intjay y = 20;
 varjay intjay suma = x + y;
 printjay(suma);
+
+
+// Condicional
+varjay intjay a := 10;
+ifjay (a > 5) {
+    printjay(1);
+} elsejay {
+    printjay(0);
+}
+
+// While real
+varjay intjay contador := 0;
+whilejay (contador < 5) {
+    printjay(contador);
+    contador := contador + 1;
+}
+
+// For real
+varjay intjay total = 0;
+forjay (varjay intjay i = 0; i < 5; i = i + 1) {
+    total = total + i;
+}
+printjay(total);
