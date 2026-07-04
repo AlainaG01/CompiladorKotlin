@@ -71,9 +71,14 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         avanzar()
         val idTok = consumir(TipoToken.IDENTIFICADOR, "identificador") ?: return
         consumir(TipoToken.ASIGNACION, ":=") ?: return
-        val (_, valor) = parsearExpresion()
+        val (tipoExpr, valorExpr) = parsearExpresion()
         consumir(TipoToken.PUNTO_COMA, ";") ?: return
-        val ok = tablaSimbolos.declarar(Simbolo(idTok.valor, tipoDato, valor, esConst, lineaDecl))
+        var valorFinal = valorExpr
+        if (tipoDato != TipoDato.DESCONOCIDO && tipoExpr != TipoDato.DESCONOCIDO && tipoDato != tipoExpr) {
+            errores.add("ERROR SEMANTICO [linea $lineaDecl, columna ${idTok.columna}]: no se puede asignar un valor de tipo $tipoExpr a la variable '${idTok.valor}' declarada como $tipoDato")
+            valorFinal = null
+        }
+        val ok = tablaSimbolos.declarar(Simbolo(idTok.valor, tipoDato, valorFinal, esConst, lineaDecl))
         if (!ok) errores.add("ERROR SEMANTICO [linea $lineaDecl, columna ${idTok.columna}]: '${idTok.valor}' ya fue declarado en este ambito")
     }
 
@@ -83,9 +88,15 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         if (simb == null) errores.add("ERROR SEMANTICO [linea ${idTok.linea}, columna ${idTok.columna}]: '${idTok.valor}' no fue declarado")
         else if (simb.esConstante) errores.add("ERROR SEMANTICO [linea ${idTok.linea}, columna ${idTok.columna}]: '${idTok.valor}' es constante y no puede reasignarse")
         consumir(TipoToken.ASIGNACION, ":=") ?: return
-        val (_, valor) = parsearExpresion()
+        val (tipoExpr, valorExpr) = parsearExpresion()
         consumir(TipoToken.PUNTO_COMA, ";") ?: return
-        if (simb != null && !simb.esConstante) tablaSimbolos.actualizar(idTok.valor, valor)
+        if (simb != null && !simb.esConstante) {
+            if (simb.tipo != TipoDato.DESCONOCIDO && tipoExpr != TipoDato.DESCONOCIDO && simb.tipo != tipoExpr) {
+                errores.add("ERROR SEMANTICO [linea ${idTok.linea}, columna ${idTok.columna}]: no se puede asignar un valor de tipo $tipoExpr a '${idTok.valor}' declarada como ${simb.tipo}")
+            } else {
+                tablaSimbolos.actualizar(idTok.valor, valorExpr)
+            }
+        }
     }
 
     private fun parsearIf() {
@@ -166,9 +177,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
     private fun parsearPrint() {
         consumirReservada("printjay")
         consumir(TipoToken.PARENTESIS_A, "(")
-        parsearExpresion()
+        val (_, valor) = parsearExpresion()
         consumir(TipoToken.PARENTESIS_C, ")")
         consumir(TipoToken.PUNTO_COMA, ";")
+        println(">> ${valor ?: "null"}")
     }
 
     private fun parsearBloque() {
@@ -238,9 +250,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         var (tipoIzq, valIzq) = parsearTermino()
         while (actual().tipo == TipoToken.OPERADOR && actual().valor in listOf("+", "-")) {
             val op = actual(); avanzar()
-            val (tipoDer, _) = parsearTermino()
+            val (tipoDer, valDer) = parsearTermino()
             if (tipoIzq != tipoDer && tipoIzq != TipoDato.DESCONOCIDO && tipoDer != TipoDato.DESCONOCIDO)
                 errores.add("ERROR SEMANTICO [linea ${op.linea}, columna ${op.columna}]: operacion '${op.valor}' entre tipos incompatibles $tipoIzq y $tipoDer")
+            valIzq = evaluarBinaria(op.valor, valIzq, valDer)
         }
         return Pair(tipoIzq, valIzq)
     }
@@ -249,11 +262,42 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         var (tipoIzq, valIzq) = parsearUnario()
         while (actual().tipo == TipoToken.OPERADOR && actual().valor in listOf("*", "/", "%")) {
             val op = actual(); avanzar()
-            val (tipoDer, _) = parsearUnario()
+            val (tipoDer, valDer) = parsearUnario()
             if (tipoIzq != tipoDer && tipoIzq != TipoDato.DESCONOCIDO && tipoDer != TipoDato.DESCONOCIDO)
                 errores.add("ERROR SEMANTICO [linea ${op.linea}, columna ${op.columna}]: operacion '${op.valor}' entre tipos incompatibles $tipoIzq y $tipoDer")
+            valIzq = evaluarBinaria(op.valor, valIzq, valDer)
         }
         return Pair(tipoIzq, valIzq)
+    }
+
+    // Mini-evaluador de operaciones aritmeticas en tiempo de "compilacion/ejecucion".
+    // Como el proyecto no tiene AST, la evaluacion ocurre en el mismo recorrido
+    // recursivo-descendente que ya calculaba los tipos: cada nivel de la gramatica
+    // (parsearSuma/parsearTermino) ahora combina tambien los valores reales, no solo
+    // sus tipos. Si algun operando es null (por error semantico previo) o la
+    // combinacion de tipos no es soportada, se devuelve null en vez de lanzar excepcion.
+    private fun evaluarBinaria(op: String, izq: Any?, der: Any?): Any? {
+        if (izq == null || der == null) return null
+        return when {
+            izq is Int && der is Int -> when (op) {
+                "+" -> izq + der
+                "-" -> izq - der
+                "*" -> izq * der
+                "/" -> if (der != 0) izq / der else null
+                "%" -> if (der != 0) izq % der else null
+                else -> null
+            }
+            izq is Double && der is Double -> when (op) {
+                "+" -> izq + der
+                "-" -> izq - der
+                "*" -> izq * der
+                "/" -> izq / der
+                "%" -> izq % der
+                else -> null
+            }
+            op == "+" && izq is String && der is String -> izq + der
+            else -> null
+        }
     }
 
     // Operadores unarios: negacion aritmetica "-" y negacion logica "notjay"

@@ -1,4 +1,4 @@
 varjay intjay x := 10;
-varjay intjay y := 20;
+varjay intjay y := 5;
 varjay intjay suma := x + y;
 printjay(suma);
