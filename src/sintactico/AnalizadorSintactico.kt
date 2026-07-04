@@ -37,7 +37,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
     fun analizar() {
         tablaSimbolos.entrarAmbito()
         while (actual().tipo != TipoToken.FIN_ARCHIVO) parsearDeclaracion()
-        tablaSimbolos.salirAmbito()
+        // No cerramos el ambito global aqui: se deja abierto a proposito para que
+        // Compilador.kt pueda imprimir la tabla de simbolos con las variables del
+        // programa despues de terminar el analisis. El programa ya termino, así
+        // que no hace falta liberar este ambito.
     }
 
     private fun parsearDeclaracion() {

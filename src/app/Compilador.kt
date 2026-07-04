@@ -10,26 +10,13 @@ import sintactico.AnalizadorSintactico
 // ──────────────────────────────────────────────────────────────
 
 fun compilar(nombre: String, codigo: String) {
-    println("\n\n===========================================================")
+    println("\n===========================================================")
     println("  PROGRAMA: $nombre")
     println("===========================================================")
-    println("CODIGO FUENTE:\n$codigo")
 
-    println("\n--- FASE 1: ANALISIS LEXICO --------------------------------")
     val lexico = AnalizadorLexico(codigo)
     val tokens = lexico.analizar()
-    tokens.filter { it.tipo != TipoToken.FIN_ARCHIVO }.forEach { println("  $it") }
-    if (lexico.errores.isNotEmpty()) { println("\nERRORES LEXICOS:"); lexico.errores.forEach { println("  !! $it") } }
 
-    println("\n  -> Representacion interna de literales numericos:")
-    tokens.filter { it.tipo == TipoToken.NUMERO_ENTERO }.forEach {
-        println("     ${it.valor} -> binario (16 bits): ${it.valor.toInt().toString(2).padStart(16, '0')}")
-    }
-    tokens.filter { it.tipo == TipoToken.NUMERO_REAL }.forEach {
-        println("     ${it.valor} -> IEEE-754 (32 bits): ${java.lang.Float.floatToIntBits(it.valor.toFloat()).toString(2).padStart(32, '0')}")
-    }
-
-    println("\n--- FASE 2: SINTACTICO + FASE 3: SEMANTICO ----------------")
     val parser = AnalizadorSintactico(tokens)
     parser.analizar()
     parser.tablaSimbolos.imprimir()
