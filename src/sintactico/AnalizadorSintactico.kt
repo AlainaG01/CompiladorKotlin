@@ -364,9 +364,14 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
         while (actual().tipo == TipoToken.OPERADOR && actual().valor in listOf("+", "-")) {
             val op = actual(); avanzar()
             val (tipoDer, valDer) = parsearTermino()
-            if (tipoIzq != tipoDer && tipoIzq != TipoDato.DESCONOCIDO && tipoDer != TipoDato.DESCONOCIDO)
+            // Concatenacion: si el operador es "+" y AL MENOS uno de los dos lados
+            // es stringjay, se permite mezclar con cualquier otro tipo (el otro
+            // lado se convierte automaticamente a texto). No es un error de tipos.
+            val esConcatenacion = op.valor == "+" && (tipoIzq == TipoDato.STRINGJAY || tipoDer == TipoDato.STRINGJAY)
+            if (!esConcatenacion && tipoIzq != tipoDer && tipoIzq != TipoDato.DESCONOCIDO && tipoDer != TipoDato.DESCONOCIDO)
                 errores.add("ERROR SEMANTICO [linea ${op.linea}, columna ${op.columna}]: operacion '${op.valor}' entre tipos incompatibles $tipoIzq y $tipoDer")
             valIzq = evaluarBinaria(op.valor, valIzq, valDer)
+            if (esConcatenacion) tipoIzq = TipoDato.STRINGJAY
         }
         return Pair(tipoIzq, valIzq)
     }
@@ -403,7 +408,10 @@ class AnalizadorSintactico(private val tokens: List<Token>) {
                 "%" -> izq % der
                 else -> null
             }
-            op == "+" && izq is String && der is String -> izq + der
+            // Concatenacion: si el operador es "+" y al menos un lado ya es String,
+            // el otro se convierte a texto con toString() (funciona con Int,
+            // Double, Boolean, o String de nuevo) y se concatenan.
+            op == "+" && (izq is String || der is String) -> "${izq}${der}"
             else -> null
         }
     }

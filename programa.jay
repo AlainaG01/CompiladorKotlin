@@ -3,6 +3,7 @@ varjay intjay x = 100;
 varjay intjay y = 20;
 varjay intjay suma = x + y;
 printjay(suma);
+printjay("El total de la suma es: " + suma);
 
 
 // Condicional
